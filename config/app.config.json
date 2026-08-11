@@ -1,0 +1,53 @@
+{
+  "app": {
+    "name": "SocialVoice",
+    "supportEmail": "support@socialvoice.local",
+    "defaultLanguage": "en"
+  },
+  "pages": [
+    "Home",
+    "Recent Calls",
+    "Wallet",
+    "Profile",
+    "Settings",
+    "FAQs",
+    "Terms",
+    "Privacy"
+  ],
+  "tabs": ["Home", "Recent", "Wallet", "Profile"],
+  "voice": {
+    "defaultProvider": "LIVEKIT_PRIMARY",
+    "minimumBalanceCoins": 5,
+    "coinChargePerMinute": 2
+  },
+  "database": {
+    "defaultProvider": "NEON_PRIMARY"
+  },
+  "payments": {
+    "activeGateway": "MOCK_GATEWAY",
+    "availableGateways": ["MOCK_GATEWAY"],
+    "topupPackages": [10, 50, 100, 250]
+  },
+  "featureFlags": {
+    "enableAccountDeletion": true,
+    "enableReporting": true,
+    "enableBlocking": true,
+    "enableRealPayments": false,
+    "enableAnalytics": true
+  },
+  "languages": ["en", "hi"],
+  "policies": {
+    "terms": "By using SocialVoice you agree to anonymous usage terms and anti-abuse policy.",
+    "privacy": "We store only service-required data and payment/call transaction records.",
+    "faqs": [
+      {
+        "q": "How does anonymous calling work?",
+        "a": "Users call with anonymous IDs. Personal phone numbers are never shared with other users."
+      },
+      {
+        "q": "How are coins charged?",
+        "a": "Coins are deducted on call completion using configured per-minute pricing."
+      }
+    ]
+  }
+}

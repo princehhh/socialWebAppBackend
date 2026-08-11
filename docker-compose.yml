@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: socialvoice-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: socialvoice
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "55432:5432"
+    volumes:
+      - socialvoice_pgdata:/var/lib/postgresql/data
+
+volumes:
+  socialvoice_pgdata:

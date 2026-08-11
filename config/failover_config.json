@@ -1,0 +1,37 @@
+{
+  "databases": {
+    "active_target": "NEON_PRIMARY",
+    "pool": {
+      "NEON_PRIMARY": { "enabled": true, "status": "HEALTHY", "priority": 1 },
+      "SUPABASE_SECONDARY": { "enabled": true, "status": "HEALTHY", "priority": 2 },
+      "RENDER_TERTIARY": { "enabled": false, "status": "INACTIVE", "priority": 3 }
+    }
+  },
+  "voice_servers": {
+    "active_target": "LIVEKIT_PRIMARY",
+    "alert_threshold_percentage": 90,
+    "pool": {
+      "LIVEKIT_PRIMARY": {
+        "enabled": true,
+        "status": "HEALTHY",
+        "monthly_limit_minutes": 50000,
+        "current_used_minutes": 0,
+        "priority": 1
+      },
+      "ZEGOCLOUD_SECONDARY": {
+        "enabled": true,
+        "status": "HEALTHY",
+        "monthly_limit_minutes": 10000,
+        "current_used_minutes": 0,
+        "priority": 2
+      },
+      "AGORA_TERTIARY": {
+        "enabled": false,
+        "status": "INACTIVE",
+        "monthly_limit_minutes": 10000,
+        "current_used_minutes": 0,
+        "priority": 3
+      }
+    }
+  }
+}

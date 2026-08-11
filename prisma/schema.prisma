@@ -1,0 +1,103 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String     @id @default(uuid())
+  anonymousId       String     @unique
+  mobileNumber      String?    @unique
+  name              String?
+  preferredLanguage String     @default("en")
+  currentStatus     String     @default("OFFLINE")
+  lastSeenAt        DateTime   @default(now())
+  isDeleted         Boolean    @default(false)
+  createdAt         DateTime   @default(now())
+  wallet            Wallet?
+
+  initiatedCalls    Call[]     @relation("CallerCalls")
+  receivedCalls     Call[]     @relation("ReceiverCalls")
+  reportsMade       Report[]   @relation("ReporterRelation")
+  reportsReceived   Report[]   @relation("ReportedUserRelation")
+  blockedUsers      Block[]    @relation("BlockerRelation")
+  blockedByUsers    Block[]    @relation("BlockedRelation")
+  sessions          Session[]
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+}
+
+model Wallet {
+  id           String        @id @default(uuid())
+  userId       String        @unique
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  coinBalance  Int           @default(0)
+  updatedAt    DateTime      @updatedAt
+  transactions Transaction[]
+}
+
+model Transaction {
+  id               String   @id @default(uuid())
+  walletId         String
+  wallet           Wallet   @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  allocationType   String
+  amountCoins      Int
+  gatewayReference String
+  status           String
+  reason           String?
+  createdAt        DateTime @default(now())
+}
+
+model Call {
+  id               String   @id @default(uuid())
+  callerId         String
+  receiverId       String
+  caller           User     @relation("CallerCalls", fields: [callerId], references: [id], onDelete: Cascade)
+  receiver         User     @relation("ReceiverCalls", fields: [receiverId], references: [id], onDelete: Cascade)
+  providerId       String
+  status           String
+  durationSeconds  Int      @default(0)
+  coinsCharged     Int      @default(0)
+  failureReason    String?
+  createdAt        DateTime @default(now())
+  completedAt      DateTime?
+}
+
+model Report {
+  id             String   @id @default(uuid())
+  reporterId     String
+  reportedUserId String
+  reason         String
+  createdAt      DateTime @default(now())
+  reporter       User     @relation("ReporterRelation", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser   User     @relation("ReportedUserRelation", fields: [reportedUserId], references: [id], onDelete: Cascade)
+}
+
+model Block {
+  id            String   @id @default(uuid())
+  blockerId     String
+  blockedUserId String
+  createdAt     DateTime @default(now())
+  blocker       User     @relation("BlockerRelation", fields: [blockerId], references: [id], onDelete: Cascade)
+  blockedUser   User     @relation("BlockedRelation", fields: [blockedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedUserId])
+}
+
+model AnalyticsEvent {
+  id        String   @id @default(uuid())
+  userId    String?
+  eventName String
+  payload   String?
+  createdAt DateTime @default(now())
+}
