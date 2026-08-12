@@ -1,3 +1,4 @@
+import "express-async-errors";
 import cors from "cors";
 import express from "express";
 import jwt from "jsonwebtoken";
@@ -16,8 +17,29 @@ const dbProvider = new PrismaDatabaseProvider();
 const prisma = dbProvider.getClient();
 const app = express();
 
+process.on("unhandledRejection", (reason) => {
+  logger.error("Unhandled promise rejection", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  logger.error("Uncaught exception", error);
+  process.exit(1);
+});
+
 app.use(cors());
 app.use(express.json());
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  res.on("finish", () => {
+    logger.info("HTTP request", {
+      method: req.method,
+      path: req.path,
+      statusCode: res.statusCode,
+      durationMs: Date.now() - startedAt
+    });
+  });
+  next();
+});
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(openApiDocument));
 
 app.get("/api-docs.json", (_req, res) => {
