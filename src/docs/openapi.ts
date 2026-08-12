@@ -1,7 +1,3 @@
-import { env } from "../config/env";
-
-const baseServerUrl = `http://localhost:${env.PORT}`;
-
 export const openApiDocument = {
   openapi: "3.0.3",
   info: {
@@ -11,8 +7,12 @@ export const openApiDocument = {
   },
   servers: [
     {
-      url: `${baseServerUrl}/api/v1`,
-      description: "Local backend"
+      url: "/api/v1",
+      description: "Current host"
+    },
+    {
+      url: "https://socialwebappbackend.onrender.com/api/v1",
+      description: "Render production"
     }
   ],
   tags: [

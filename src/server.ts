@@ -85,21 +85,31 @@ const mobileNumberSchema = z
   .transform((value) => normalizeMobileNumber(value));
 
 app.get("/api/v1/health", async (_req, res) => {
-  const dbHealthy = await dbProvider.healthCheck();
-  return res.status(200).json(ok("Service healthy", {
-    dbHealthy,
-    activeDbProvider: runtimeConfig.getActiveDbTarget(),
-    activeVoiceProvider: runtimeConfig.getActiveVoiceTarget()
-  }));
+  try {
+    const dbHealthy = await dbProvider.healthCheck();
+    return res.status(200).json(ok("Service healthy", {
+      dbHealthy,
+      activeDbProvider: runtimeConfig.getActiveDbTarget(),
+      activeVoiceProvider: runtimeConfig.getActiveVoiceTarget()
+    }));
+  } catch (error) {
+    logger.error("Health endpoint failed", error);
+    return res.status(500).json(fail("Health check failed", "HEALTH_CHECK_FAILED"));
+  }
 });
 
 app.get("/api/v1", async (_req, res) => {
-  const dbHealthy = await dbProvider.healthCheck();
-  return res.status(200).json(ok("API root healthy", {
-    dbHealthy,
-    activeDbProvider: runtimeConfig.getActiveDbTarget(),
-    activeVoiceProvider: runtimeConfig.getActiveVoiceTarget()
-  }));
+  try {
+    const dbHealthy = await dbProvider.healthCheck();
+    return res.status(200).json(ok("API root healthy", {
+      dbHealthy,
+      activeDbProvider: runtimeConfig.getActiveDbTarget(),
+      activeVoiceProvider: runtimeConfig.getActiveVoiceTarget()
+    }));
+  } catch (error) {
+    logger.error("API root endpoint failed", error);
+    return res.status(500).json(fail("API root check failed", "API_ROOT_CHECK_FAILED"));
+  }
 });
 
 app.get("/api/v1/config/public", (_req, res) => {
@@ -113,111 +123,121 @@ app.get("/api/v1/content/legal", (_req, res) => {
 });
 
 app.post("/api/v1/auth/mobile-login", async (req, res) => {
-  const bodySchema = z.object({ mobileNumber: mobileNumberSchema });
-  const parsed = bodySchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json(fail("Invalid request payload", "INVALID_PAYLOAD"));
-  }
-
-  const existingUser = await prisma.user.findFirst({
-    where: {
-      mobileNumber: parsed.data.mobileNumber,
-      isDeleted: false
-    },
-    include: { wallet: true }
-  });
-
-  if (!existingUser) {
-    return res.status(200).json(ok("Mobile number not registered", {
-      userExists: false,
-      mobileNumber: parsed.data.mobileNumber
-    }));
-  }
-
-  const user = await prisma.user.update({
-    where: { id: existingUser.id },
-    data: {
-      currentStatus: "ONLINE",
-      lastSeenAt: new Date()
-    },
-    include: { wallet: true }
-  });
-
-  const token = await createSessionForUser(user.id);
-  await trackEvent(prisma, "mobile_login", user.id, { mobileNumber: user.mobileNumber });
-
-  return res.status(200).json(ok("Login successful", {
-    userExists: true,
-    token,
-    user: {
-      id: user.id,
-      anonymousId: user.anonymousId,
-      mobileNumber: user.mobileNumber,
-      name: user.name,
-      preferredLanguage: user.preferredLanguage,
-      currentStatus: user.currentStatus,
-      coinBalance: user.wallet?.coinBalance ?? 0
+  try {
+    const bodySchema = z.object({ mobileNumber: mobileNumberSchema });
+    const parsed = bodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json(fail("Invalid request payload", "INVALID_PAYLOAD"));
     }
-  }));
+
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        mobileNumber: parsed.data.mobileNumber,
+        isDeleted: false
+      },
+      include: { wallet: true }
+    });
+
+    if (!existingUser) {
+      return res.status(200).json(ok("Mobile number not registered", {
+        userExists: false,
+        mobileNumber: parsed.data.mobileNumber
+      }));
+    }
+
+    const user = await prisma.user.update({
+      where: { id: existingUser.id },
+      data: {
+        currentStatus: "ONLINE",
+        lastSeenAt: new Date()
+      },
+      include: { wallet: true }
+    });
+
+    const token = await createSessionForUser(user.id);
+    await trackEvent(prisma, "mobile_login", user.id, { mobileNumber: user.mobileNumber });
+
+    return res.status(200).json(ok("Login successful", {
+      userExists: true,
+      token,
+      user: {
+        id: user.id,
+        anonymousId: user.anonymousId,
+        mobileNumber: user.mobileNumber,
+        name: user.name,
+        preferredLanguage: user.preferredLanguage,
+        currentStatus: user.currentStatus,
+        coinBalance: user.wallet?.coinBalance ?? 0
+      }
+    }));
+  } catch (error) {
+    logger.error("Mobile login failed", error);
+    return res.status(500).json(fail("Mobile login failed", "MOBILE_LOGIN_FAILED"));
+  }
 });
 
 app.post("/api/v1/auth/mobile-signup", async (req, res) => {
-  const bodySchema = z.object({
-    mobileNumber: mobileNumberSchema,
-    name: z.string().trim().min(2).max(60),
-    referralCode: z.string().trim().min(3).max(30).optional(),
-    preferredLanguage: z.string().optional()
-  });
-  const parsed = bodySchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json(fail("Invalid request payload", "INVALID_PAYLOAD"));
-  }
-
-  const alreadyExists = await prisma.user.findFirst({
-    where: {
-      mobileNumber: parsed.data.mobileNumber,
-      isDeleted: false
+  try {
+    const bodySchema = z.object({
+      mobileNumber: mobileNumberSchema,
+      name: z.string().trim().min(2).max(60),
+      referralCode: z.string().trim().min(3).max(30).optional(),
+      preferredLanguage: z.string().optional()
+    });
+    const parsed = bodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json(fail("Invalid request payload", "INVALID_PAYLOAD"));
     }
-  });
 
-  if (alreadyExists) {
-    return res.status(409).json(fail("User already registered with this mobile number", "USER_ALREADY_EXISTS"));
-  }
+    const alreadyExists = await prisma.user.findFirst({
+      where: {
+        mobileNumber: parsed.data.mobileNumber,
+        isDeleted: false
+      }
+    });
 
-  const preferredLanguage = parsed.data.preferredLanguage || runtimeConfig.appConfig.app.defaultLanguage;
-  const anonymousId = await generateAnonymousId();
+    if (alreadyExists) {
+      return res.status(409).json(fail("User already registered with this mobile number", "USER_ALREADY_EXISTS"));
+    }
 
-  const user = await prisma.user.create({
-    data: {
-      anonymousId,
-      mobileNumber: parsed.data.mobileNumber,
-      name: parsed.data.name,
+    const preferredLanguage = parsed.data.preferredLanguage || runtimeConfig.appConfig.app.defaultLanguage;
+    const anonymousId = await generateAnonymousId();
+
+    const user = await prisma.user.create({
+      data: {
+        anonymousId,
+        mobileNumber: parsed.data.mobileNumber,
+        name: parsed.data.name,
+        preferredLanguage,
+        currentStatus: "ONLINE",
+        wallet: { create: { coinBalance: runtimeConfig.appConfig.voice.minimumBalanceCoins } }
+      },
+      include: { wallet: true }
+    });
+
+    const token = await createSessionForUser(user.id);
+    await trackEvent(prisma, "mobile_signup", user.id, {
       preferredLanguage,
-      currentStatus: "ONLINE",
-      wallet: { create: { coinBalance: runtimeConfig.appConfig.voice.minimumBalanceCoins } }
-    },
-    include: { wallet: true }
-  });
-
-  const token = await createSessionForUser(user.id);
-  await trackEvent(prisma, "mobile_signup", user.id, {
-    preferredLanguage,
-    mobileNumber: user.mobileNumber,
-    referralCode: parsed.data.referralCode || null
-  });
-
-  return res.status(201).json(ok("Signup successful", {
-    token,
-    user: {
-      id: user.id,
-      anonymousId: user.anonymousId,
       mobileNumber: user.mobileNumber,
-      name: user.name,
-      preferredLanguage: user.preferredLanguage,
-      currentStatus: user.currentStatus,
-      coinBalance: user.wallet?.coinBalance ?? 0
-    }
-  }));
+      referralCode: parsed.data.referralCode || null
+    });
+
+    return res.status(201).json(ok("Signup successful", {
+      token,
+      user: {
+        id: user.id,
+        anonymousId: user.anonymousId,
+        mobileNumber: user.mobileNumber,
+        name: user.name,
+        preferredLanguage: user.preferredLanguage,
+        currentStatus: user.currentStatus,
+        coinBalance: user.wallet?.coinBalance ?? 0
+      }
+    }));
+  } catch (error) {
+    logger.error("Mobile signup failed", error);
+    return res.status(500).json(fail("Mobile signup failed", "MOBILE_SIGNUP_FAILED"));
+  }
 });
 
 app.post("/api/v1/auth/anonymous-login", async (req, res) => {
