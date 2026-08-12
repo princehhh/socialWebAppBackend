@@ -93,6 +93,15 @@ app.get("/api/v1/health", async (_req, res) => {
   }));
 });
 
+app.get("/api/v1", async (_req, res) => {
+  const dbHealthy = await dbProvider.healthCheck();
+  return res.status(200).json(ok("API root healthy", {
+    dbHealthy,
+    activeDbProvider: runtimeConfig.getActiveDbTarget(),
+    activeVoiceProvider: runtimeConfig.getActiveVoiceTarget()
+  }));
+});
+
 app.get("/api/v1/config/public", (_req, res) => {
   const { app: appMeta, tabs, pages, languages, payments, featureFlags } = runtimeConfig.appConfig;
   return res.status(200).json(ok("Public configuration", { app: appMeta, tabs, pages, languages, payments, featureFlags }));
