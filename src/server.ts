@@ -2,6 +2,7 @@ import "express-async-errors";
 import cors from "cors";
 import express from "express";
 import jwt from "jsonwebtoken";
+import { Prisma } from "@prisma/client";
 import swaggerUi from "swagger-ui-express";
 import { z } from "zod";
 import { PrismaDatabaseProvider } from "./providers/db/PrismaDatabaseProvider";
@@ -16,6 +17,9 @@ import { openApiDocument } from "./docs/openapi";
 const dbProvider = new PrismaDatabaseProvider();
 const prisma = dbProvider.getClient();
 const app = express();
+const exposeInternalErrors = runtimeConfig.env.EXPOSE_INTERNAL_ERRORS === "true";
+const enableDbDiagnostics = runtimeConfig.env.ENABLE_DB_DIAGNOSTICS === "true";
+const dbDiagnosticKey = runtimeConfig.env.DB_DIAGNOSTIC_KEY || "";
 
 process.on("unhandledRejection", (reason) => {
   logger.error("Unhandled promise rejection", reason);
@@ -106,6 +110,111 @@ const mobileNumberSchema = z
   .refine((value) => /^\+?[0-9\s\-()]+$/.test(value), "Invalid mobile number format")
   .transform((value) => normalizeMobileNumber(value));
 
+function mapAuthError(error: unknown): { message: string; errorCode: string; status: number } {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    if (error.code === "P2022") {
+      return {
+        message: "Database schema is out of sync (missing column). Run prisma db push on deployed environment.",
+        errorCode: "DB_SCHEMA_OUT_OF_SYNC",
+        status: 500
+      };
+    }
+
+    if (error.code === "P2021") {
+      return {
+        message: "Database schema is out of sync (missing table). Run prisma db push on deployed environment.",
+        errorCode: "DB_SCHEMA_OUT_OF_SYNC",
+        status: 500
+      };
+    }
+
+    if (error.code === "P1001") {
+      return {
+        message: "Database is not reachable from backend service.",
+        errorCode: "DB_UNREACHABLE",
+        status: 503
+      };
+    }
+
+    if (error.code === "P1008") {
+      return {
+        message: "Database operation timed out.",
+        errorCode: "DB_TIMEOUT",
+        status: 504
+      };
+    }
+  }
+
+  return {
+    message: "Mobile login failed",
+    errorCode: "MOBILE_LOGIN_FAILED",
+    status: 500
+  };
+}
+
+function authorizeDbDiagnostics(req: express.Request, res: express.Response): boolean {
+  if (!enableDbDiagnostics) {
+    res.status(404).json(fail("Not found", "NOT_FOUND"));
+    return false;
+  }
+
+  if (!dbDiagnosticKey) {
+    return true;
+  }
+
+  const providedKey = req.header("x-diagnostic-key") || "";
+  if (providedKey !== dbDiagnosticKey) {
+    res.status(401).json(fail("Invalid diagnostic key", "UNAUTHORIZED"));
+    return false;
+  }
+
+  return true;
+}
+
+function shapeDbDiagnosticError(error: unknown): { errorCode: string; message: string } {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    return {
+      errorCode: `PRISMA_${error.code}`,
+      message: error.message
+    };
+  }
+
+  if (error instanceof Prisma.PrismaClientInitializationError) {
+    return {
+      errorCode: "PRISMA_INIT_ERROR",
+      message: error.message
+    };
+  }
+
+  if (error instanceof Error) {
+    return {
+      errorCode: "DB_DIAGNOSTIC_ERROR",
+      message: error.message
+    };
+  }
+
+  return {
+    errorCode: "DB_DIAGNOSTIC_ERROR",
+    message: String(error)
+  };
+}
+
+function getSafeErrorDetail(error: unknown): string {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    return `PrismaKnownError code=${error.code} message=${error.message.slice(0, 220)}`;
+  }
+
+  if (error instanceof Prisma.PrismaClientInitializationError) {
+    return `PrismaInitializationError message=${error.message.slice(0, 220)}`;
+  }
+
+  if (error instanceof Error) {
+    return `${error.name}: ${error.message.slice(0, 220)}`;
+  }
+
+  return String(error).slice(0, 220);
+}
+
 app.get("/api/v1/health", async (_req, res) => {
   try {
     const dbHealthy = await dbProvider.healthCheck();
@@ -142,6 +251,99 @@ app.get("/api/v1/config/public", (_req, res) => {
 app.get("/api/v1/content/legal", (_req, res) => {
   const { terms, privacy, faqs } = runtimeConfig.appConfig.policies;
   return res.status(200).json(ok("Legal content", { terms, privacy, faqs }));
+});
+
+app.get("/api/v1/diagnostics/db/health", async (req, res) => {
+  if (!authorizeDbDiagnostics(req, res)) {
+    return;
+  }
+
+  try {
+    const dbHealthy = await dbProvider.healthCheck();
+    const pingResult = await prisma.$queryRaw<Array<{ now: Date }>>`SELECT NOW() as now`;
+
+    return res.status(200).json(ok("DB health diagnostic", {
+      dbHealthy,
+      pingOk: true,
+      serverTime: pingResult[0]?.now ?? null
+    }));
+  } catch (error) {
+    const shaped = shapeDbDiagnosticError(error);
+    logger.error("DB diagnostics health failed", error);
+    return res.status(500).json(fail(`DB health diagnostic failed: ${shaped.message}`, shaped.errorCode));
+  }
+});
+
+app.get("/api/v1/diagnostics/db/read", async (req, res) => {
+  if (!authorizeDbDiagnostics(req, res)) {
+    return;
+  }
+
+  try {
+    const [userCount, walletCount, callCount, analyticsCount] = await Promise.all([
+      prisma.user.count(),
+      prisma.wallet.count(),
+      prisma.call.count(),
+      prisma.analyticsEvent.count()
+    ]);
+
+    return res.status(200).json(ok("DB read diagnostic", {
+      readOk: true,
+      counts: {
+        users: userCount,
+        wallets: walletCount,
+        calls: callCount,
+        analyticsEvents: analyticsCount
+      }
+    }));
+  } catch (error) {
+    const shaped = shapeDbDiagnosticError(error);
+    logger.error("DB diagnostics read failed", error);
+    return res.status(500).json(fail(`DB read diagnostic failed: ${shaped.message}`, shaped.errorCode));
+  }
+});
+
+app.post("/api/v1/diagnostics/db/write", async (req, res) => {
+  if (!authorizeDbDiagnostics(req, res)) {
+    return;
+  }
+
+  try {
+    const marker = `diag_${Date.now()}`;
+    const writeResult = await prisma.$transaction(async (tx) => {
+      const created = await tx.analyticsEvent.create({
+        data: {
+          eventName: "db_diagnostic",
+          payload: JSON.stringify({ marker, step: "create" })
+        }
+      });
+
+      const updated = await tx.analyticsEvent.update({
+        where: { id: created.id },
+        data: {
+          payload: JSON.stringify({ marker, step: "update" })
+        }
+      });
+
+      await tx.analyticsEvent.delete({ where: { id: created.id } });
+
+      return {
+        createdId: created.id,
+        updatedPayload: updated.payload
+      };
+    });
+
+    return res.status(200).json(ok("DB write diagnostic", {
+      writeOk: true,
+      createOk: Boolean(writeResult.createdId),
+      updateOk: Boolean(writeResult.updatedPayload),
+      deleteOk: true
+    }));
+  } catch (error) {
+    const shaped = shapeDbDiagnosticError(error);
+    logger.error("DB diagnostics write failed", error);
+    return res.status(500).json(fail(`DB write diagnostic failed: ${shaped.message}`, shaped.errorCode));
+  }
 });
 
 app.post("/api/v1/auth/mobile-login", async (req, res) => {
@@ -194,7 +396,11 @@ app.post("/api/v1/auth/mobile-login", async (req, res) => {
     }));
   } catch (error) {
     logger.error("Mobile login failed", error);
-    return res.status(500).json(fail("Mobile login failed", "MOBILE_LOGIN_FAILED"));
+    const shapedError = mapAuthError(error);
+    const message = exposeInternalErrors
+      ? `${shapedError.message} | detail: ${getSafeErrorDetail(error)}`
+      : shapedError.message;
+    return res.status(shapedError.status).json(fail(message, shapedError.errorCode));
   }
 });
 
@@ -258,7 +464,11 @@ app.post("/api/v1/auth/mobile-signup", async (req, res) => {
     }));
   } catch (error) {
     logger.error("Mobile signup failed", error);
-    return res.status(500).json(fail("Mobile signup failed", "MOBILE_SIGNUP_FAILED"));
+    const shapedError = mapAuthError(error);
+    const message = exposeInternalErrors
+      ? `${shapedError.message} | detail: ${getSafeErrorDetail(error)}`
+      : shapedError.message;
+    return res.status(shapedError.status).json(fail(message, shapedError.errorCode));
   }
 });
 

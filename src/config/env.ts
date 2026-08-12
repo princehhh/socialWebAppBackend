@@ -21,7 +21,10 @@ const envSchema = z.object({
   ZEGOCLOUD_SERVER_SECRET: z.string().optional(),
   AGORA_APP_ID: z.string().optional(),
   AGORA_APP_CERTIFICATE: z.string().optional(),
-  MOCK_PAYMENT_AUTO_SUCCESS: z.string().default("true")
+  MOCK_PAYMENT_AUTO_SUCCESS: z.string().default("true"),
+  EXPOSE_INTERNAL_ERRORS: z.string().default("false"),
+  ENABLE_DB_DIAGNOSTICS: z.string().default("false"),
+  DB_DIAGNOSTIC_KEY: z.string().optional()
 });
 
 export const env = envSchema.parse(process.env);
