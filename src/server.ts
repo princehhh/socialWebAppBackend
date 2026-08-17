@@ -68,6 +68,19 @@ function isAllowedAction(key: string, max: number, windowMs: number): boolean {
   return true;
 }
 
+function isFeatureEnabled(flagName: string): boolean {
+  return runtimeConfig.appConfig.featureFlags[flagName] === true;
+}
+
+function requireFeature(flagName: string) {
+  return (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!isFeatureEnabled(flagName)) {
+      return res.status(403).json(fail(`Feature '${flagName}' is disabled`, "FEATURE_DISABLED"));
+    }
+    return next();
+  };
+}
+
 async function generateAnonymousId(): Promise<string> {
   for (let i = 0; i < 20; i += 1) {
     const candidate = `SV${Math.floor(100000 + Math.random() * 899999)}`;
@@ -244,8 +257,17 @@ app.get("/api/v1", async (_req, res) => {
 });
 
 app.get("/api/v1/config/public", (_req, res) => {
-  const { app: appMeta, tabs, pages, languages, payments, featureFlags } = runtimeConfig.appConfig;
-  return res.status(200).json(ok("Public configuration", { app: appMeta, tabs, pages, languages, payments, featureFlags }));
+  const { app: appMeta, tabs, pages, languages, payments, featureFlags, voice, chat } = runtimeConfig.appConfig;
+  return res.status(200).json(ok("Public configuration", {
+    app: appMeta,
+    tabs,
+    pages,
+    languages,
+    payments,
+    featureFlags,
+    voice,
+    chat
+  }));
 });
 
 app.get("/api/v1/content/legal", (_req, res) => {
@@ -512,6 +534,29 @@ app.post("/api/v1/auth/anonymous-login", async (req, res) => {
 
 const requireAuth = authMiddleware(prisma);
 
+app.get("/api/v1/auth/session", requireAuth, async (req, res) => {
+  const user = await prisma.user.findFirst({
+    where: { id: req.authenticatedUserId as string, isDeleted: false },
+    include: { wallet: true }
+  });
+
+  if (!user) {
+    return res.status(401).json(fail("Session user no longer exists", "SESSION_INVALID"));
+  }
+
+  return res.status(200).json(ok("Session valid", {
+    user: {
+      id: user.id,
+      anonymousId: user.anonymousId,
+      mobileNumber: user.mobileNumber,
+      name: user.name,
+      preferredLanguage: user.preferredLanguage,
+      currentStatus: user.currentStatus,
+      coinBalance: user.wallet?.coinBalance ?? 0
+    }
+  }));
+});
+
 app.get("/api/v1/users/available", requireAuth, async (req, res) => {
   const userId = req.authenticatedUserId as string;
 
@@ -661,7 +706,8 @@ app.post("/api/v1/calls/request", requireAuth, async (req, res) => {
   const bodySchema = z
     .object({
       receiverUserId: z.string().optional(),
-      receiverAnonymousId: z.string().optional()
+      receiverAnonymousId: z.string().optional(),
+      callType: z.enum(["VOICE", "VIDEO"]).default("VOICE")
     })
     .refine((value) => Boolean(value.receiverUserId || value.receiverAnonymousId), {
       message: "Receiver identifier required"
@@ -669,6 +715,10 @@ app.post("/api/v1/calls/request", requireAuth, async (req, res) => {
   const parsed = bodySchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json(fail("Invalid call request payload", "INVALID_PAYLOAD"));
+  }
+
+  if (parsed.data.callType === "VIDEO" && !isFeatureEnabled("enableVideoCall")) {
+    return res.status(403).json(fail("Video calling is disabled", "FEATURE_DISABLED"));
   }
 
   const callerId = req.authenticatedUserId as string;
@@ -713,18 +763,24 @@ app.post("/api/v1/calls/request", requireAuth, async (req, res) => {
       callerId,
       receiverId: receiver.id,
       providerId: runtimeConfig.getActiveVoiceTarget(),
+      callType: parsed.data.callType,
       status: "REQUESTED"
     }
   });
 
   const roomId = `room_${call.id}`;
   const voiceManager = new VoiceManager(runtimeConfig.getActiveVoiceTarget());
-  const sessionData = await voiceManager.requestSession(roomId, callerId);
+  const sessionData = await voiceManager.requestSession(roomId, callerId, parsed.data.callType);
 
-  await trackEvent(prisma, "call_requested", callerId, { callId: call.id, providerId: sessionData.providerId });
+  await trackEvent(prisma, "call_requested", callerId, {
+    callId: call.id,
+    providerId: sessionData.providerId,
+    callType: call.callType
+  });
 
   return res.status(200).json(ok("Call session generated", {
     callId: call.id,
+    callType: call.callType,
     sessionData,
     minimumBalanceCoins: runtimeConfig.appConfig.voice.minimumBalanceCoins
   }));
@@ -760,6 +816,7 @@ app.get("/api/v1/calls/incoming", requireAuth, async (req, res) => {
     callerAnonymousId: incomingCall.caller.anonymousId,
     callerName: incomingCall.caller.name,
     providerId: incomingCall.providerId,
+    callType: incomingCall.callType,
     roomId: `room_${incomingCall.id}`,
     createdAt: incomingCall.createdAt
   }));
@@ -793,6 +850,7 @@ app.get("/api/v1/calls/status/:callId", requireAuth, async (req, res) => {
     receiver: call.receiver,
     roomId: `room_${call.id}`,
     providerId: call.providerId,
+    callType: call.callType,
     completedAt: call.completedAt
   }));
 });
@@ -848,7 +906,7 @@ app.post("/api/v1/calls/respond", requireAuth, async (req, res) => {
 
   const roomId = `room_${call.id}`;
   const voiceManager = new VoiceManager(runtimeConfig.getActiveVoiceTarget());
-  const receiverSession = await voiceManager.requestSession(roomId, userId);
+  const receiverSession = await voiceManager.requestSession(roomId, userId, call.callType === "VIDEO" ? "VIDEO" : "VOICE");
 
   await prisma.call.update({
     where: { id: call.id },
@@ -862,6 +920,7 @@ app.post("/api/v1/calls/respond", requireAuth, async (req, res) => {
   return res.status(200).json(ok("Call accepted", {
     callId: call.id,
     status: "IN_PROGRESS",
+    callType: call.callType,
     sessionData: receiverSession,
     caller: call.caller,
     receiver: call.receiver
@@ -911,7 +970,11 @@ app.post("/api/v1/calls/complete", requireAuth, async (req, res) => {
   }
 
   const minutes = Math.max(1, Math.ceil(parsed.data.durationSeconds / 60));
-  const coinsToCharge = minutes * runtimeConfig.appConfig.voice.coinChargePerMinute;
+  const ratePerMinute =
+    call.callType === "VIDEO"
+      ? runtimeConfig.appConfig.voice.videoCoinChargePerMinute
+      : runtimeConfig.appConfig.voice.coinChargePerMinute;
+  const coinsToCharge = minutes * ratePerMinute;
   if (wallet.coinBalance < coinsToCharge) {
     await prisma.call.update({
       where: { id: call.id },
@@ -980,10 +1043,128 @@ app.get("/api/v1/calls/recent", requireAuth, async (req, res) => {
     durationSeconds: call.durationSeconds,
     createdAt: call.createdAt,
     status: call.status,
+    callType: call.callType,
     coinsCharged: call.coinsCharged
   }));
 
   return res.status(200).json(ok("Recent calls", shaped));
+});
+
+const requireChatFeature = requireFeature("enableChat");
+
+function shapeChatMessage(message: {
+  id: string;
+  senderId: string;
+  receiverId: string;
+  body: string;
+  readAt: Date | null;
+  createdAt: Date;
+}, viewerId: string) {
+  return {
+    id: message.id,
+    senderId: message.senderId,
+    receiverId: message.receiverId,
+    body: message.body,
+    isMine: message.senderId === viewerId,
+    readAt: message.readAt,
+    createdAt: message.createdAt
+  };
+}
+
+app.post("/api/v1/chat/messages", requireAuth, requireChatFeature, async (req, res) => {
+  const bodySchema = z.object({
+    receiverUserId: z.string().min(1),
+    body: z.string().trim().min(1).max(runtimeConfig.appConfig.chat.maxMessageLength)
+  });
+  const parsed = bodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json(fail("Invalid chat message payload", "INVALID_PAYLOAD"));
+  }
+
+  const senderId = req.authenticatedUserId as string;
+  if (parsed.data.receiverUserId === senderId) {
+    return res.status(400).json(fail("Cannot message yourself", "INVALID_RECEIVER"));
+  }
+
+  if (!isAllowedAction(`chat:${senderId}`, 60, 60_000)) {
+    return res.status(429).json(fail("Too many messages. Slow down.", "RATE_LIMITED"));
+  }
+
+  const receiver = await prisma.user.findFirst({
+    where: { id: parsed.data.receiverUserId, isDeleted: false }
+  });
+  if (!receiver) {
+    return res.status(404).json(fail("Receiver not found", "RECEIVER_NOT_FOUND"));
+  }
+
+  const blocked = await prisma.block.findFirst({
+    where: {
+      OR: [
+        { blockerId: senderId, blockedUserId: receiver.id },
+        { blockerId: receiver.id, blockedUserId: senderId }
+      ]
+    }
+  });
+  if (blocked) {
+    return res.status(403).json(fail("Chat blocked by user privacy settings", "CHAT_BLOCKED"));
+  }
+
+  const message = await prisma.chatMessage.create({
+    data: {
+      senderId,
+      receiverId: receiver.id,
+      body: parsed.data.body
+    }
+  });
+
+  await trackEvent(prisma, "chat_message_sent", senderId, { receiverId: receiver.id });
+
+  return res.status(201).json(ok("Message sent", shapeChatMessage(message, senderId)));
+});
+
+app.get("/api/v1/chat/messages/:peerUserId", requireAuth, requireChatFeature, async (req, res) => {
+  const viewerId = req.authenticatedUserId as string;
+  const peerUserId = req.params.peerUserId;
+
+  const querySchema = z.object({
+    afterCreatedAt: z.string().datetime().optional()
+  });
+  const parsedQuery = querySchema.safeParse(req.query);
+  if (!parsedQuery.success) {
+    return res.status(400).json(fail("Invalid chat history query", "INVALID_PAYLOAD"));
+  }
+
+  const conversationFilter = {
+    OR: [
+      { senderId: viewerId, receiverId: peerUserId },
+      { senderId: peerUserId, receiverId: viewerId }
+    ]
+  };
+
+  const messages = await prisma.chatMessage.findMany({
+    where: parsedQuery.data.afterCreatedAt
+      ? { AND: [conversationFilter, { createdAt: { gt: new Date(parsedQuery.data.afterCreatedAt) } }] }
+      : conversationFilter,
+    orderBy: { createdAt: "desc" },
+    take: runtimeConfig.appConfig.chat.historyPageSize
+  });
+
+  await prisma.chatMessage.updateMany({
+    where: { senderId: peerUserId, receiverId: viewerId, readAt: null },
+    data: { readAt: new Date() }
+  });
+
+  const ordered = messages.slice().reverse().map((message) => shapeChatMessage(message, viewerId));
+  return res.status(200).json(ok("Chat history", ordered));
+});
+
+app.get("/api/v1/chat/unread-count", requireAuth, requireChatFeature, async (req, res) => {
+  const viewerId = req.authenticatedUserId as string;
+  const unreadCount = await prisma.chatMessage.count({
+    where: { receiverId: viewerId, readAt: null }
+  });
+
+  return res.status(200).json(ok("Unread chat count", { unreadCount }));
 });
 
 app.post("/api/v1/reports", requireAuth, async (req, res) => {

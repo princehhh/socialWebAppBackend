@@ -1,9 +1,9 @@
-import { IVoiceProvider, VoiceSessionResult } from "./IVoiceProvider";
+import { IVoiceProvider, VoiceSessionOptions, VoiceSessionResult } from "./IVoiceProvider";
 import jwt from "jsonwebtoken";
 import { env } from "../../config/env";
 
 export class LiveKitAdapter implements IVoiceProvider {
-  async createToken(roomId: string, userId: string): Promise<VoiceSessionResult> {
+  async createToken(roomId: string, userId: string, options: VoiceSessionOptions): Promise<VoiceSessionResult> {
     if (env.LIVEKIT_API_KEY && env.LIVEKIT_API_SECRET) {
       const nowSeconds = Math.floor(Date.now() / 1000);
       const token = jwt.sign(
@@ -16,7 +16,9 @@ export class LiveKitAdapter implements IVoiceProvider {
             roomJoin: true,
             room: roomId,
             canPublish: true,
-            canSubscribe: true
+            canSubscribe: true,
+            canPublishData: true,
+            canPublishSources: options.callType === "VIDEO" ? ["camera", "microphone"] : ["microphone"]
           }
         },
         env.LIVEKIT_API_SECRET,
@@ -27,7 +29,8 @@ export class LiveKitAdapter implements IVoiceProvider {
         providerId: "LIVEKIT_PRIMARY",
         roomId,
         token,
-        serverUrl: env.LIVEKIT_HOST
+        serverUrl: env.LIVEKIT_HOST,
+        callType: options.callType
       };
     }
 
@@ -35,7 +38,8 @@ export class LiveKitAdapter implements IVoiceProvider {
       providerId: "LIVEKIT_PRIMARY",
       roomId,
       token: `livekit_mock_${userId}_${Date.now()}`,
-      serverUrl: env.LIVEKIT_HOST
+      serverUrl: env.LIVEKIT_HOST,
+      callType: options.callType
     };
   }
 }

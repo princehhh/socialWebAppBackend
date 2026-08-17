@@ -1,11 +1,12 @@
-import { IVoiceProvider, VoiceSessionResult } from "./IVoiceProvider";
+import { IVoiceProvider, VoiceSessionOptions, VoiceSessionResult } from "./IVoiceProvider";
 
 export class AgoraAdapter implements IVoiceProvider {
-  async createToken(roomId: string, userId: string): Promise<VoiceSessionResult> {
+  async createToken(roomId: string, userId: string, options: VoiceSessionOptions): Promise<VoiceSessionResult> {
     return {
       providerId: "AGORA_TERTIARY",
       roomId,
-      token: `agora_mock_${userId}_${Date.now()}`
+      token: `agora_mock_${userId}_${Date.now()}`,
+      callType: options.callType
     };
   }
 }

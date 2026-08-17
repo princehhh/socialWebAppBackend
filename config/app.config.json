@@ -18,7 +18,12 @@
   "voice": {
     "defaultProvider": "LIVEKIT_PRIMARY",
     "minimumBalanceCoins": 5,
-    "coinChargePerMinute": 2
+    "coinChargePerMinute": 2,
+    "videoCoinChargePerMinute": 4
+  },
+  "chat": {
+    "maxMessageLength": 1000,
+    "historyPageSize": 50
   },
   "database": {
     "defaultProvider": "NEON_PRIMARY"
@@ -33,7 +38,9 @@
     "enableReporting": true,
     "enableBlocking": true,
     "enableRealPayments": false,
-    "enableAnalytics": true
+    "enableAnalytics": true,
+    "enableChat": true,
+    "enableVideoCall": true
   },
   "languages": ["en", "hi"],
   "policies": {

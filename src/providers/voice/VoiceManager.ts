@@ -1,4 +1,4 @@
-import { IVoiceProvider, VoiceSessionResult } from "./IVoiceProvider";
+import { CallMediaType, IVoiceProvider, VoiceSessionResult } from "./IVoiceProvider";
 import { LiveKitAdapter } from "./LiveKitAdapter";
 import { ZegoCloudAdapter } from "./ZegoCloudAdapter";
 import { AgoraAdapter } from "./AgoraAdapter";
@@ -16,7 +16,7 @@ export class VoiceManager {
     }
   }
 
-  async requestSession(roomId: string, userId: string): Promise<VoiceSessionResult> {
-    return this.activeProvider.createToken(roomId, userId);
+  async requestSession(roomId: string, userId: string, callType: CallMediaType = "VOICE"): Promise<VoiceSessionResult> {
+    return this.activeProvider.createToken(roomId, userId, { callType });
   }
 }

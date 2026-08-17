@@ -27,6 +27,8 @@ model User {
   blockedUsers      Block[]    @relation("BlockerRelation")
   blockedByUsers    Block[]    @relation("BlockedRelation")
   sessions          Session[]
+  sentMessages      ChatMessage[] @relation("ChatSender")
+  receivedMessages  ChatMessage[] @relation("ChatReceiver")
 }
 
 model Session {
@@ -66,12 +68,27 @@ model Call {
   caller           User     @relation("CallerCalls", fields: [callerId], references: [id], onDelete: Cascade)
   receiver         User     @relation("ReceiverCalls", fields: [receiverId], references: [id], onDelete: Cascade)
   providerId       String
+  callType         String   @default("VOICE")
   status           String
   durationSeconds  Int      @default(0)
   coinsCharged     Int      @default(0)
   failureReason    String?
   createdAt        DateTime @default(now())
   completedAt      DateTime?
+}
+
+model ChatMessage {
+  id         String   @id @default(uuid())
+  senderId   String
+  receiverId String
+  sender     User     @relation("ChatSender", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver   User     @relation("ChatReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+  body       String
+  readAt     DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([senderId, receiverId, createdAt])
+  @@index([receiverId, readAt])
 }
 
 model Report {

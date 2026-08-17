@@ -13,8 +13,15 @@ const appConfigSchema = z.object({
   voice: z.object({
     defaultProvider: z.string(),
     minimumBalanceCoins: z.number().int().min(0),
-    coinChargePerMinute: z.number().int().min(1)
+    coinChargePerMinute: z.number().int().min(1),
+    videoCoinChargePerMinute: z.number().int().min(1).default(4)
   }),
+  chat: z
+    .object({
+      maxMessageLength: z.number().int().min(1).default(1000),
+      historyPageSize: z.number().int().min(1).max(200).default(50)
+    })
+    .default({ maxMessageLength: 1000, historyPageSize: 50 }),
   database: z.object({
     defaultProvider: z.string()
   }),
@@ -58,7 +65,7 @@ const failoverSchema = z.object({
 export type AppConfig = z.infer<typeof appConfigSchema>;
 export type FailoverConfig = z.infer<typeof failoverSchema>;
 
-function readJsonFile<T>(absolutePath: string, schema: z.ZodSchema<T>): T {
+function readJsonFile<S extends z.ZodTypeAny>(absolutePath: string, schema: S): z.infer<S> {
   const raw = fs.readFileSync(absolutePath, "utf-8");
   const parsed = JSON.parse(raw);
   return schema.parse(parsed);

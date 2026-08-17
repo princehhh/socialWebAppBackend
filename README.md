@@ -22,6 +22,7 @@
 - `src/middleware`: authentication middleware
 - `src/utils`: logger, analytics, API envelope helpers
 - `prisma`: schema for users, wallets, calls, reports, blocks, sessions
+- `prisma`: schema for users, wallets, calls, reports, blocks, sessions, chat messages
 - `config`: business config and failover config JSON files
 
 ## Run Locally
@@ -42,11 +43,25 @@
 
 - `POST /api/v1/auth/mobile-login`
 - `POST /api/v1/auth/mobile-signup`
+- `GET /api/v1/auth/session` (restore persisted mobile session)
 - `POST /api/v1/calls/request`
 - `GET /api/v1/calls/incoming`
 - `POST /api/v1/calls/respond`
 - `GET /api/v1/calls/status/:callId`
 - `POST /api/v1/calls/complete`
+
+## Chat Endpoints (Feature-flagged)
+
+- `POST /api/v1/chat/messages`
+- `GET /api/v1/chat/messages/:peerUserId`
+- `GET /api/v1/chat/unread-count`
+
+## Feature Flags and Call Types
+
+- Feature flags are configured in `config/app.config.json`
+- `enableChat`: enables/disables all chat APIs and chat UI in mobile app
+- `enableVideoCall`: enables/disables video call requests and video UI in mobile app
+- `POST /api/v1/calls/request` now accepts `callType` (`VOICE` or `VIDEO`)
 
 ## Quick Learning Keywords
 
