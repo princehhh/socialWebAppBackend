@@ -40,7 +40,7 @@
     "enableRealPayments": false,
     "enableAnalytics": true,
     "enableChat": true,
-    "enableVideoCall": true
+    "enableVideoCall": false
   },
   "languages": ["en", "hi"],
   "policies": {

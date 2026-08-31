@@ -1,9 +1,11 @@
 import "express-async-errors";
 import cors from "cors";
 import express from "express";
+import { createServer } from "node:http";
 import jwt from "jsonwebtoken";
 import { Prisma } from "@prisma/client";
 import swaggerUi from "swagger-ui-express";
+import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 import { PrismaDatabaseProvider } from "./providers/db/PrismaDatabaseProvider";
 import { runtimeConfig } from "./config/runtime";
@@ -17,9 +19,16 @@ import { openApiDocument } from "./docs/openapi";
 const dbProvider = new PrismaDatabaseProvider();
 const prisma = dbProvider.getClient();
 const app = express();
+const httpServer = createServer(app);
+const presenceServer = new WebSocketServer({ noServer: true });
 const exposeInternalErrors = runtimeConfig.env.EXPOSE_INTERNAL_ERRORS === "true";
 const enableDbDiagnostics = runtimeConfig.env.ENABLE_DB_DIAGNOSTICS === "true";
 const dbDiagnosticKey = runtimeConfig.env.DB_DIAGNOSTIC_KEY || "";
+const allowedOrigins = new Set(runtimeConfig.env.CORS_ALLOWED_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean));
+
+function isAllowedOrigin(origin: string): boolean {
+  return allowedOrigins.has(origin);
+}
 
 process.on("unhandledRejection", (reason) => {
   logger.error("Unhandled promise rejection", reason);
@@ -30,8 +39,26 @@ process.on("uncaughtException", (error) => {
   process.exit(1);
 });
 
-app.use(cors());
-app.use(express.json());
+app.set("trust proxy", 1);
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Permissions-Policy", "camera=(), geolocation=(), payment=()");
+  next();
+});
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || isAllowedOrigin(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error("Origin is not allowed"));
+  },
+  methods: ["GET", "POST", "PATCH", "DELETE"],
+  allowedHeaders: ["Authorization", "Content-Type", "x-diagnostic-key"]
+}));
+app.use(express.json({ limit: "64kb" }));
 app.use((req, res, next) => {
   const startedAt = Date.now();
   res.on("finish", () => {
@@ -51,7 +78,132 @@ app.get("/api-docs.json", (_req, res) => {
 });
 
 const actionCounters = new Map<string, { count: number; windowStart: number }>();
-const ACTIVE_USER_WINDOW_MS = 90_000;
+const ACTIVE_USER_WINDOW_MS = 60_000;
+type PresenceSocket = WebSocket & { userId?: string; isAlive?: boolean };
+const presenceSockets = new Map<string, Set<PresenceSocket>>();
+
+function hasActivePresenceSocket(userId: string): boolean {
+  return (presenceSockets.get(userId)?.size || 0) > 0;
+}
+
+function publishPresenceUpdate(user: { id: string; anonymousId: string; name: string | null; currentStatus: string; preferredLanguage: string }): void {
+  const message = JSON.stringify({
+    type: "presence",
+    user: {
+      id: user.id,
+      anonymousId: user.anonymousId,
+      name: user.name,
+      currentStatus: user.currentStatus,
+      preferredLanguage: user.preferredLanguage
+    }
+  });
+  for (const [userId, sockets] of presenceSockets) {
+    if (userId === user.id) {
+      continue;
+    }
+    for (const socket of sockets) {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(message);
+      }
+    }
+  }
+}
+
+function publishToUser(userId: string, message: Record<string, unknown>): void {
+  const serializedMessage = JSON.stringify(message);
+  for (const socket of presenceSockets.get(userId) || []) {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(serializedMessage);
+    }
+  }
+}
+
+async function updatePresence(userIds: string[], status: "ONLINE" | "OFFLINE" | "BUSY"): Promise<void> {
+  await prisma.user.updateMany({
+    where: { id: { in: userIds } },
+    data: { currentStatus: status, lastSeenAt: new Date() }
+  });
+  const users = await prisma.user.findMany({
+    where: { id: { in: userIds } },
+    select: { id: true, anonymousId: true, name: true, currentStatus: true, preferredLanguage: true }
+  });
+  users.forEach(publishPresenceUpdate);
+}
+
+presenceServer.on("connection", (socket: PresenceSocket) => {
+  const authenticationTimeout = setTimeout(() => socket.close(1008, "Authentication required"), 5_000);
+
+  socket.on("message", async (rawMessage) => {
+    if (socket.userId) {
+      return;
+    }
+    try {
+      const message = JSON.parse(rawMessage.toString()) as { type?: string; token?: string };
+      if (message.type !== "authenticate" || !message.token) {
+        socket.close(1008, "Invalid authentication message");
+        return;
+      }
+      const decoded = jwt.verify(message.token, runtimeConfig.env.JWT_SECRET) as { userId: string; sessionId: string };
+      const session = await prisma.session.findUnique({ where: { id: decoded.sessionId } });
+      if (!session || session.userId !== decoded.userId || session.expiresAt < new Date()) {
+        socket.close(1008, "Session expired");
+        return;
+      }
+      clearTimeout(authenticationTimeout);
+      socket.userId = decoded.userId;
+      socket.isAlive = true;
+      const sockets = presenceSockets.get(decoded.userId) || new Set<PresenceSocket>();
+      sockets.add(socket);
+      presenceSockets.set(decoded.userId, sockets);
+      await updatePresence([decoded.userId], "ONLINE");
+    } catch {
+      socket.close(1008, "Authentication failed");
+    }
+  });
+
+  socket.on("pong", () => {
+    socket.isAlive = true;
+  });
+  socket.on("close", () => {
+    clearTimeout(authenticationTimeout);
+    if (!socket.userId) {
+      return;
+    }
+    const sockets = presenceSockets.get(socket.userId);
+    sockets?.delete(socket);
+    if (!sockets?.size) {
+      presenceSockets.delete(socket.userId);
+      updatePresence([socket.userId], "OFFLINE").catch((error) => logger.error("Presence disconnect update failed", error));
+    }
+  });
+});
+
+const presencePingInterval = setInterval(() => {
+  for (const sockets of presenceSockets.values()) {
+    for (const socket of sockets) {
+      if (socket.isAlive === false) {
+        socket.terminate();
+        continue;
+      }
+      socket.isAlive = false;
+      socket.ping();
+    }
+  }
+}, 30_000);
+
+httpServer.on("upgrade", (request, socket, head) => {
+  const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
+  const origin = request.headers.origin;
+  if (url.pathname !== "/api/v1/presence" || (origin && !isAllowedOrigin(origin))) {
+    socket.destroy();
+    return;
+  }
+  presenceServer.handleUpgrade(request, socket, head, (webSocket) => {
+    presenceServer.emit("connection", webSocket, request);
+  });
+});
+
+httpServer.on("close", () => clearInterval(presencePingInterval));
 
 function isAllowedAction(key: string, max: number, windowMs: number): boolean {
   const now = Date.now();
@@ -172,7 +324,8 @@ function authorizeDbDiagnostics(req: express.Request, res: express.Response): bo
   }
 
   if (!dbDiagnosticKey) {
-    return true;
+    res.status(404).json(fail("Not found", "NOT_FOUND"));
+    return false;
   }
 
   const providedKey = req.header("x-diagnostic-key") || "";
@@ -229,31 +382,11 @@ function getSafeErrorDetail(error: unknown): string {
 }
 
 app.get("/api/v1/health", async (_req, res) => {
-  try {
-    const dbHealthy = await dbProvider.healthCheck();
-    return res.status(200).json(ok("Service healthy", {
-      dbHealthy,
-      activeDbProvider: runtimeConfig.getActiveDbTarget(),
-      activeVoiceProvider: runtimeConfig.getActiveVoiceTarget()
-    }));
-  } catch (error) {
-    logger.error("Health endpoint failed", error);
-    return res.status(500).json(fail("Health check failed", "HEALTH_CHECK_FAILED"));
-  }
+  return res.status(200).json(ok("Service available", { status: "ok" }));
 });
 
-app.get("/api/v1", async (_req, res) => {
-  try {
-    const dbHealthy = await dbProvider.healthCheck();
-    return res.status(200).json(ok("API root healthy", {
-      dbHealthy,
-      activeDbProvider: runtimeConfig.getActiveDbTarget(),
-      activeVoiceProvider: runtimeConfig.getActiveVoiceTarget()
-    }));
-  } catch (error) {
-    logger.error("API root endpoint failed", error);
-    return res.status(500).json(fail("API root check failed", "API_ROOT_CHECK_FAILED"));
-  }
+app.get("/api/v1", (_req, res) => {
+  return res.status(200).json(ok("Service available", { status: "ok" }));
 });
 
 app.get("/api/v1/config/public", (_req, res) => {
@@ -370,6 +503,9 @@ app.post("/api/v1/diagnostics/db/write", async (req, res) => {
 
 app.post("/api/v1/auth/mobile-login", async (req, res) => {
   try {
+    if (!isAllowedAction(`login:${req.ip}`, 10, 15 * 60_000)) {
+      return res.status(429).json(fail("Too many login attempts. Try again later.", "RATE_LIMITED"));
+    }
     const bodySchema = z.object({ mobileNumber: mobileNumberSchema });
     const parsed = bodySchema.safeParse(req.body);
     if (!parsed.success) {
@@ -428,6 +564,9 @@ app.post("/api/v1/auth/mobile-login", async (req, res) => {
 
 app.post("/api/v1/auth/mobile-signup", async (req, res) => {
   try {
+    if (!isAllowedAction(`signup:${req.ip}`, 5, 60 * 60_000)) {
+      return res.status(429).json(fail("Too many signup attempts. Try again later.", "RATE_LIMITED"));
+    }
     const bodySchema = z.object({
       mobileNumber: mobileNumberSchema,
       name: z.string().trim().min(2).max(60),
@@ -535,14 +674,17 @@ app.post("/api/v1/auth/anonymous-login", async (req, res) => {
 const requireAuth = authMiddleware(prisma);
 
 app.get("/api/v1/auth/session", requireAuth, async (req, res) => {
-  const user = await prisma.user.findFirst({
-    where: { id: req.authenticatedUserId as string, isDeleted: false },
-    include: { wallet: true }
-  });
+  const existingUser = await prisma.user.findFirst({ where: { id: req.authenticatedUserId as string, isDeleted: false } });
 
-  if (!user) {
+  if (!existingUser) {
     return res.status(401).json(fail("Session user no longer exists", "SESSION_INVALID"));
   }
+
+  const user = await prisma.user.update({
+    where: { id: existingUser.id },
+    data: { currentStatus: "ONLINE", lastSeenAt: new Date() },
+    include: { wallet: true }
+  });
 
   return res.status(200).json(ok("Session valid", {
     user: {
@@ -583,7 +725,7 @@ app.get("/api/v1/users/available", requireAuth, async (req, res) => {
   const nowMs = Date.now();
   const shapedUsers = users.map((user) => {
     const isRecentlyActive = nowMs - user.lastSeenAt.getTime() <= ACTIVE_USER_WINDOW_MS;
-    const effectiveStatus = isRecentlyActive ? user.currentStatus : "OFFLINE";
+    const effectiveStatus = isRecentlyActive || hasActivePresenceSocket(user.id) ? user.currentStatus : "OFFLINE";
 
     return {
       ...user,
@@ -610,6 +752,7 @@ app.patch("/api/v1/users/status", requireAuth, async (req, res) => {
   });
 
   await trackEvent(prisma, "status_updated", user.id, { status: user.currentStatus });
+  publishPresenceUpdate(user);
 
   return res.status(200).json(ok("Status updated", {
     anonymousId: user.anonymousId,
@@ -741,6 +884,26 @@ app.post("/api/v1/calls/request", requireAuth, async (req, res) => {
     return res.status(400).json(fail("Cannot call yourself", "INVALID_RECEIVER"));
   }
 
+  const receiverIsActive = Date.now() - receiver.lastSeenAt.getTime() <= ACTIVE_USER_WINDOW_MS || hasActivePresenceSocket(receiver.id);
+  if (receiver.currentStatus !== "ONLINE" || !receiverIsActive) {
+    return res.status(409).json(fail("This user is currently offline", "RECEIVER_OFFLINE"));
+  }
+
+  const ongoingCall = await prisma.call.findFirst({
+    where: {
+      status: { in: ["REQUESTED", "IN_PROGRESS"] },
+      OR: [
+        { callerId },
+        { receiverId: callerId },
+        { callerId: receiver.id },
+        { receiverId: receiver.id }
+      ]
+    }
+  });
+  if (ongoingCall) {
+    return res.status(409).json(fail("This user is busy on another call", "USER_BUSY"));
+  }
+
   const blocked = await prisma.block.findFirst({
     where: {
       OR: [
@@ -765,6 +928,19 @@ app.post("/api/v1/calls/request", requireAuth, async (req, res) => {
       providerId: runtimeConfig.getActiveVoiceTarget(),
       callType: parsed.data.callType,
       status: "REQUESTED"
+    }
+  });
+
+  await updatePresence([callerId, receiver.id], "BUSY");
+
+  publishToUser(receiver.id, {
+    type: "incoming-call",
+    call: {
+      callId: call.id,
+      callerAnonymousId: caller.anonymousId,
+      callerName: caller.name,
+      callType: call.callType,
+      roomId: `room_${call.id}`
     }
   });
 
@@ -896,6 +1072,8 @@ app.post("/api/v1/calls/respond", requireAuth, async (req, res) => {
       }
     });
 
+    await updatePresence([call.callerId, call.receiverId], "ONLINE");
+
     await trackEvent(prisma, "call_rejected", userId, { callId: call.id });
     return res.status(200).json(ok("Call rejected", {
       callId: rejected.id,
@@ -960,6 +1138,8 @@ app.post("/api/v1/calls/complete", requireAuth, async (req, res) => {
       }
     });
 
+    await updatePresence([call.callerId, call.receiverId], "ONLINE");
+
     await trackEvent(prisma, "call_failed", requesterId, { callId: call.id, reason: failed.failureReason });
     return res.status(200).json(ok("Call marked as failed", failed));
   }
@@ -1013,6 +1193,8 @@ app.post("/api/v1/calls/complete", requireAuth, async (req, res) => {
       completedAt: new Date()
     }
   });
+
+  await updatePresence([call.callerId, call.receiverId], "ONLINE");
 
   await trackEvent(prisma, "call_completed", requesterId, { callId: call.id, coinsToCharge, durationSeconds: parsed.data.durationSeconds });
 
@@ -1250,13 +1432,9 @@ app.patch("/api/v1/profile", requireAuth, async (req, res) => {
 
 app.post("/api/v1/logout", requireAuth, async (req, res) => {
   const token = req.authToken as string;
-  await prisma.user.update({
-    where: { id: req.authenticatedUserId as string },
-    data: {
-      currentStatus: "OFFLINE",
-      lastSeenAt: new Date()
-    }
-  });
+  const userId = req.authenticatedUserId as string;
+  await updatePresence([userId], "OFFLINE");
+  presenceSockets.get(userId)?.forEach((socket) => socket.close(1000, "Logged out"));
   await prisma.session.deleteMany({ where: { userId: req.authenticatedUserId, token: { contains: "session_" } } });
   await trackEvent(prisma, "logout", req.authenticatedUserId, { tokenFragment: token.slice(0, 12) });
   return res.status(200).json(ok("Logged out"));
@@ -1265,13 +1443,16 @@ app.post("/api/v1/logout", requireAuth, async (req, res) => {
 app.delete("/api/v1/account", requireAuth, async (req, res) => {
   const userId = req.authenticatedUserId as string;
 
-  await prisma.user.update({
+  const user = await prisma.user.update({
     where: { id: userId },
     data: {
       isDeleted: true,
       currentStatus: "OFFLINE"
     }
   });
+
+  publishPresenceUpdate(user);
+  presenceSockets.get(userId)?.forEach((socket) => socket.close(1000, "Account deleted"));
 
   await prisma.session.deleteMany({ where: { userId } });
   await trackEvent(prisma, "account_deleted", userId);
@@ -1287,7 +1468,7 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
 async function start(): Promise<void> {
   await dbProvider.connect();
 
-  app.listen(runtimeConfig.env.PORT, () => {
+  httpServer.listen(runtimeConfig.env.PORT, () => {
     logger.info(`Backend running on port ${runtimeConfig.env.PORT}`);
   });
 }

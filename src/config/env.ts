@@ -24,7 +24,8 @@ const envSchema = z.object({
   MOCK_PAYMENT_AUTO_SUCCESS: z.string().default("true"),
   EXPOSE_INTERNAL_ERRORS: z.string().default("false"),
   ENABLE_DB_DIAGNOSTICS: z.string().default("false"),
-  DB_DIAGNOSTIC_KEY: z.string().optional()
+  DB_DIAGNOSTIC_KEY: z.string().optional(),
+  CORS_ALLOWED_ORIGINS: z.string().default("http://localhost:8081,http://localhost:19006")
 });
 
 export const env = envSchema.parse(process.env);
