@@ -9,6 +9,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 import { PrismaDatabaseProvider } from "./providers/db/PrismaDatabaseProvider";
 import { runtimeConfig } from "./config/runtime";
+import { AppConfig, appConfigSchema } from "./config/sharedConfig";
 import { authMiddleware } from "./middleware/auth";
 import { fail, ok } from "./utils/apiResponse";
 import { VoiceManager } from "./providers/voice/VoiceManager";
@@ -59,6 +60,7 @@ app.use(cors({
   allowedHeaders: ["Authorization", "Content-Type", "x-diagnostic-key"]
 }));
 app.use(express.json({ limit: "64kb" }));
+app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 app.use((req, res, next) => {
   const startedAt = Date.now();
   res.on("finish", () => {
@@ -248,8 +250,14 @@ function isAllowedAction(key: string, max: number, windowMs: number): boolean {
   return true;
 }
 
+let activeAppConfig: AppConfig = runtimeConfig.appConfig;
+const ADMIN_SETTINGS_KEY = "app-config";
+const ADMIN_COOKIE_NAME = "socialvoice_admin";
+const adminId = runtimeConfig.env.ADMIN_ID || "superprince";
+const adminPassword = runtimeConfig.env.ADMIN_PASSWORD || "SocialFuck@55";
+
 function isFeatureEnabled(flagName: string): boolean {
-  return runtimeConfig.appConfig.featureFlags[flagName] === true;
+  return activeAppConfig.featureFlags[flagName] === true;
 }
 
 function requireFeature(flagName: string) {
@@ -259,6 +267,52 @@ function requireFeature(flagName: string) {
     }
     return next();
   };
+}
+
+function getAdminToken(req: express.Request): string | undefined {
+  const cookie = req.headers.cookie?.split(";").find((entry) => entry.trim().startsWith(`${ADMIN_COOKIE_NAME}=`));
+  return cookie?.split("=").slice(1).join("=");
+}
+
+function isAdminRequest(req: express.Request): boolean {
+  try {
+    const token = getAdminToken(req);
+    if (!token) {
+      return false;
+    }
+    const payload = jwt.verify(token, runtimeConfig.env.JWT_SECRET) as { role?: string; adminId?: string };
+    return payload.role === "admin" && payload.adminId === adminId;
+  } catch {
+    return false;
+  }
+}
+
+function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  if (!isAdminRequest(req)) {
+    res.status(401).json(fail("Admin authentication required", "ADMIN_AUTH_REQUIRED"));
+    return;
+  }
+  next();
+}
+
+function renderAdminLogin(errorMessage = ""): string {
+  const error = errorMessage ? `<p class="error">${errorMessage}</p>` : "";
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>SocialVoice Admin</title><style>body{margin:0;font-family:system-ui,sans-serif;background:#f1f5fb;color:#182a4b;display:grid;min-height:100vh;place-items:center}.panel{width:min(360px,calc(100% - 40px));background:#fff;padding:28px;border-radius:8px;box-shadow:0 12px 35px #1d315426}h1{margin:0 0 8px}p{color:#536786}label{display:block;margin-top:16px;font-weight:600}input,button,textarea{box-sizing:border-box;width:100%;font:inherit}input,textarea{margin-top:6px;padding:10px;border:1px solid #b9c7dd;border-radius:6px}button{margin-top:22px;padding:11px;border:0;border-radius:6px;background:#2864dc;color:#fff;font-weight:700;cursor:pointer}.error{color:#b42318}</style></head><body><main class="panel"><h1>Admin</h1><p>Manage SocialVoice configuration.</p>${error}<form method="post" action="/admin/login"><label>Admin ID<input name="adminId" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form></main></body></html>`;
+}
+
+function renderAdminPanel(): string {
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>SocialVoice Admin</title><style>body{margin:0;font-family:system-ui,sans-serif;background:#f1f5fb;color:#182a4b}.page{max-width:900px;margin:0 auto;padding:32px 20px}header{display:flex;align-items:center;justify-content:space-between;gap:16px}h1{margin:0}.note{color:#536786;line-height:1.5}textarea{box-sizing:border-box;width:100%;min-height:560px;padding:14px;border:1px solid #b9c7dd;border-radius:6px;font:13px ui-monospace,monospace;line-height:1.45}button{padding:10px 16px;border:0;border-radius:6px;background:#2864dc;color:#fff;font-weight:700;cursor:pointer}.secondary{background:#5d6f8c}.status{min-height:24px;margin:14px 0;color:#176a3a}.error{color:#b42318}</style></head><body><main class="page"><header><div><h1>SocialVoice Admin</h1><p class="note">Edit validated application settings. Changes apply immediately and persist after restart.</p></div><button class="secondary" onclick="location.href='/admin/logout'">Sign out</button></header><textarea id="settings" aria-label="Application settings"></textarea><p id="status" class="status"></p><button id="save">Save settings</button></main><script>const editor=document.getElementById('settings'),status=document.getElementById('status');async function load(){const response=await fetch('/admin/api/settings');if(!response.ok)throw new Error('Unable to load settings');editor.value=JSON.stringify(await response.json(),null,2)}document.getElementById('save').onclick=async()=>{try{const response=await fetch('/admin/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:editor.value});if(!response.ok)throw new Error((await response.json()).message||'Settings were rejected');editor.value=JSON.stringify(await response.json(),null,2);status.className='status';status.textContent='Settings saved.'}catch(error){status.className='status error';status.textContent=error instanceof Error?error.message:'Unable to save settings'}};load().catch(error=>{status.className='status error';status.textContent=error.message})</script></body></html>`;
+}
+
+async function loadActiveAppConfig(): Promise<void> {
+  try {
+    const setting = await prisma.appSetting.findUnique({ where: { key: ADMIN_SETTINGS_KEY } });
+    if (setting) {
+      activeAppConfig = appConfigSchema.parse(setting.value);
+    }
+  } catch (error) {
+    logger.error("Unable to load admin settings; using file configuration", error);
+  }
 }
 
 async function generateAnonymousId(): Promise<string> {
@@ -417,8 +471,50 @@ app.get("/api/v1", (_req, res) => {
   return res.status(200).json(ok("Service available", { status: "ok" }));
 });
 
+app.get("/admin", (req, res) => {
+  return res.status(200).type("html").send(isAdminRequest(req) ? renderAdminPanel() : renderAdminLogin());
+});
+
+app.post("/admin/login", (req, res) => {
+  if (!isAllowedAction(`admin-login:${req.ip}`, 5, 15 * 60_000) || req.body.adminId !== adminId || req.body.password !== adminPassword) {
+    return res.status(401).type("html").send(renderAdminLogin("Invalid credentials."));
+  }
+  const token = jwt.sign({ role: "admin", adminId }, runtimeConfig.env.JWT_SECRET, { expiresIn: "8h" });
+  res.cookie(ADMIN_COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: "strict",
+    secure: runtimeConfig.env.NODE_ENV === "production",
+    maxAge: 8 * 60 * 60 * 1000
+  });
+  return res.redirect("/admin");
+});
+
+app.get("/admin/logout", (_req, res) => {
+  res.clearCookie(ADMIN_COOKIE_NAME);
+  return res.redirect("/admin");
+});
+
+app.get("/admin/api/settings", requireAdmin, (_req, res) => {
+  return res.status(200).json(activeAppConfig);
+});
+
+app.patch("/admin/api/settings", requireAdmin, async (req, res) => {
+  const parsed = appConfigSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json(fail("Settings do not match the required configuration format", "INVALID_SETTINGS"));
+  }
+  activeAppConfig = parsed.data;
+  await prisma.appSetting.upsert({
+    where: { key: ADMIN_SETTINGS_KEY },
+    create: { key: ADMIN_SETTINGS_KEY, value: parsed.data as Prisma.InputJsonValue },
+    update: { value: parsed.data as Prisma.InputJsonValue }
+  });
+  logger.info("Admin settings updated", { adminId, featureFlags: activeAppConfig.featureFlags });
+  return res.status(200).json(activeAppConfig);
+});
+
 app.get("/api/v1/config/public", (_req, res) => {
-  const { app: appMeta, tabs, pages, languages, payments, featureFlags, voice, chat } = runtimeConfig.appConfig;
+  const { app: appMeta, tabs, pages, languages, payments, featureFlags, voice, chat } = activeAppConfig;
   return res.status(200).json(ok("Public configuration", {
     app: appMeta,
     tabs,
@@ -617,7 +713,7 @@ app.post("/api/v1/auth/mobile-signup", async (req, res) => {
       return res.status(409).json(fail("User already registered with this mobile number", "USER_ALREADY_EXISTS"));
     }
 
-    const preferredLanguage = parsed.data.preferredLanguage || runtimeConfig.appConfig.app.defaultLanguage;
+    const preferredLanguage = parsed.data.preferredLanguage || activeAppConfig.app.defaultLanguage;
     const anonymousId = await generateAnonymousId();
 
     const user = await prisma.user.create({
@@ -627,7 +723,7 @@ app.post("/api/v1/auth/mobile-signup", async (req, res) => {
         name: parsed.data.name,
         preferredLanguage,
         currentStatus: "ONLINE",
-        wallet: { create: { coinBalance: runtimeConfig.appConfig.voice.minimumBalanceCoins } }
+        wallet: { create: { coinBalance: activeAppConfig.voice.minimumBalanceCoins } }
       },
       include: { wallet: true }
     });
@@ -668,7 +764,7 @@ app.post("/api/v1/auth/anonymous-login", async (req, res) => {
     return res.status(400).json(fail("Invalid request payload", "INVALID_PAYLOAD"));
   }
 
-  const preferredLanguage = parsed.data.preferredLanguage || runtimeConfig.appConfig.app.defaultLanguage;
+  const preferredLanguage = parsed.data.preferredLanguage || activeAppConfig.app.defaultLanguage;
   const anonymousId = await generateAnonymousId();
 
   const user = await prisma.user.create({
@@ -676,7 +772,7 @@ app.post("/api/v1/auth/anonymous-login", async (req, res) => {
       anonymousId,
       preferredLanguage,
       currentStatus: "ONLINE",
-      wallet: { create: { coinBalance: runtimeConfig.appConfig.voice.minimumBalanceCoins } }
+      wallet: { create: { coinBalance: activeAppConfig.voice.minimumBalanceCoins } }
     },
     include: { wallet: true }
   });
@@ -826,7 +922,7 @@ app.post("/api/v1/wallet/mock-topup", requireAuth, async (req, res) => {
     return res.status(400).json(fail("Invalid top-up payload", "INVALID_PAYLOAD"));
   }
 
-  const allowedPackages = runtimeConfig.appConfig.payments.topupPackages;
+  const allowedPackages = activeAppConfig.payments.topupPackages;
   if (!allowedPackages.includes(parsed.data.amountCoins)) {
     return res.status(400).json(fail("Amount is not in configured top-up packages", "INVALID_TOPUP_PACKAGE"));
   }
@@ -945,7 +1041,7 @@ app.post("/api/v1/calls/request", requireAuth, async (req, res) => {
     return res.status(403).json(fail("Call blocked by user privacy settings", "CALL_BLOCKED"));
   }
 
-  if (caller.wallet.coinBalance < runtimeConfig.appConfig.voice.minimumBalanceCoins) {
+  if (caller.wallet.coinBalance < activeAppConfig.voice.minimumBalanceCoins) {
     return res.status(402).json(fail("Insufficient balance for call start", "INSUFFICIENT_BALANCE"));
   }
 
@@ -986,7 +1082,7 @@ app.post("/api/v1/calls/request", requireAuth, async (req, res) => {
     callId: call.id,
     callType: call.callType,
     sessionData,
-    minimumBalanceCoins: runtimeConfig.appConfig.voice.minimumBalanceCoins
+    minimumBalanceCoins: activeAppConfig.voice.minimumBalanceCoins
   }));
 });
 
@@ -1180,8 +1276,8 @@ app.post("/api/v1/calls/complete", requireAuth, async (req, res) => {
   const minutes = Math.max(1, Math.ceil(parsed.data.durationSeconds / 60));
   const ratePerMinute =
     call.callType === "VIDEO"
-      ? runtimeConfig.appConfig.voice.videoCoinChargePerMinute
-      : runtimeConfig.appConfig.voice.coinChargePerMinute;
+      ? activeAppConfig.voice.videoCoinChargePerMinute
+      : activeAppConfig.voice.coinChargePerMinute;
   const coinsToCharge = minutes * ratePerMinute;
   if (wallet.coinBalance < coinsToCharge) {
     await prisma.call.update({
@@ -1296,7 +1392,7 @@ function shapeChatMessage(message: {
 app.post("/api/v1/chat/messages", requireAuth, requireChatFeature, async (req, res) => {
   const bodySchema = z.object({
     receiverUserId: z.string().min(1),
-    body: z.string().trim().min(1).max(runtimeConfig.appConfig.chat.maxMessageLength)
+    body: z.string().trim().min(1).max(activeAppConfig.chat.maxMessageLength)
   });
   const parsed = bodySchema.safeParse(req.body);
   if (!parsed.success) {
@@ -1368,7 +1464,7 @@ app.get("/api/v1/chat/messages/:peerUserId", requireAuth, requireChatFeature, as
       ? { AND: [conversationFilter, { createdAt: { gt: new Date(parsedQuery.data.afterCreatedAt) } }] }
       : conversationFilter,
     orderBy: { createdAt: "desc" },
-    take: runtimeConfig.appConfig.chat.historyPageSize
+    take: activeAppConfig.chat.historyPageSize
   });
 
   await prisma.chatMessage.updateMany({
@@ -1507,6 +1603,7 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
 
 async function start(): Promise<void> {
   await dbProvider.connect();
+  await loadActiveAppConfig();
 
   httpServer.listen(runtimeConfig.env.PORT, () => {
     logger.info(`Backend running on port ${runtimeConfig.env.PORT}`);

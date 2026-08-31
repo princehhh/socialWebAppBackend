@@ -34,6 +34,13 @@
 5. Push schema: `npx prisma db push`
 6. Start dev server: `npm run dev`
 
+## Admin Configuration
+
+- Open `http://localhost:4000/admin` to sign in and manage application configuration.
+- The panel manages feature flags, call pricing, chat limits, payment packages, languages, navigation, and policy content. Changes apply immediately and are stored in PostgreSQL.
+- Run `npx prisma db push` after deploying this version to create the `AppSetting` table.
+- Set `ADMIN_ID` and `ADMIN_PASSWORD` in the deployment environment before production use. Do not use the temporary development credentials in production.
+
 ## API Docs (Swagger)
 
 - Swagger UI: `http://localhost:4000/api-docs`

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 
-const appConfigSchema = z.object({
+export const appConfigSchema = z.object({
   app: z.object({
     name: z.string(),
     supportEmail: z.string().email(),
