@@ -253,8 +253,8 @@ function isAllowedAction(key: string, max: number, windowMs: number): boolean {
 let activeAppConfig: AppConfig = runtimeConfig.appConfig;
 const ADMIN_SETTINGS_KEY = "app-config";
 const ADMIN_COOKIE_NAME = "socialvoice_admin";
-const adminId = runtimeConfig.env.ADMIN_ID || "superprince";
-const adminPassword = runtimeConfig.env.ADMIN_PASSWORD || "SocialFuck@55";
+const adminId = runtimeConfig.env.ADMIN_ID || "abc";
+const adminPassword = runtimeConfig.env.ADMIN_PASSWORD || "dummy";
 
 function isFeatureEnabled(flagName: string): boolean {
   return activeAppConfig.featureFlags[flagName] === true;
