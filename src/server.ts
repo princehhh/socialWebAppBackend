@@ -1,6 +1,7 @@
 import "express-async-errors";
 import cors from "cors";
 import express from "express";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import jwt from "jsonwebtoken";
 import { Prisma } from "@prisma/client";
@@ -255,6 +256,8 @@ const ADMIN_SETTINGS_KEY = "app-config";
 const ADMIN_COOKIE_NAME = "socialvoice_admin";
 const adminId = runtimeConfig.env.ADMIN_ID || "abc";
 const adminPassword = runtimeConfig.env.ADMIN_PASSWORD || "dummy";
+const adminSessions = new Map<string, number>();
+const ADMIN_SESSION_DURATION_MS = 8 * 60 * 60 * 1000;
 
 function isFeatureEnabled(flagName: string): boolean {
   return activeAppConfig.featureFlags[flagName] === true;
@@ -275,16 +278,16 @@ function getAdminToken(req: express.Request): string | undefined {
 }
 
 function isAdminRequest(req: express.Request): boolean {
-  try {
-    const token = getAdminToken(req);
-    if (!token) {
-      return false;
-    }
-    const payload = jwt.verify(token, runtimeConfig.env.JWT_SECRET) as { role?: string; adminId?: string };
-    return payload.role === "admin" && payload.adminId === adminId;
-  } catch {
+  const token = getAdminToken(req);
+  if (!token) {
     return false;
   }
+  const expiresAt = adminSessions.get(token);
+  if (!expiresAt || expiresAt <= Date.now()) {
+    adminSessions.delete(token);
+    return false;
+  }
+  return true;
 }
 
 function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
@@ -488,12 +491,13 @@ app.post("/admin/login", (req, res) => {
     return res.status(401).type("html").send(renderAdminLogin("Invalid credentials."));
   }
   try {
-    const token = jwt.sign({ role: "admin", adminId }, runtimeConfig.env.JWT_SECRET, { expiresIn: "8h" });
+    const token = randomBytes(32).toString("hex");
+    adminSessions.set(token, Date.now() + ADMIN_SESSION_DURATION_MS);
     res.cookie(ADMIN_COOKIE_NAME, token, {
       httpOnly: true,
       sameSite: "strict",
       secure: runtimeConfig.env.NODE_ENV === "production",
-      maxAge: 8 * 60 * 60 * 1000
+      maxAge: ADMIN_SESSION_DURATION_MS
     });
     return res.redirect("/admin");
   } catch (error) {
