@@ -26,7 +26,10 @@ const presenceServer = new WebSocketServer({ noServer: true });
 const exposeInternalErrors = runtimeConfig.env.EXPOSE_INTERNAL_ERRORS === "true";
 const enableDbDiagnostics = runtimeConfig.env.ENABLE_DB_DIAGNOSTICS === "true";
 const dbDiagnosticKey = runtimeConfig.env.DB_DIAGNOSTIC_KEY || "";
-const allowedOrigins = new Set(runtimeConfig.env.CORS_ALLOWED_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean));
+const allowedOrigins = new Set([
+  ...runtimeConfig.env.CORS_ALLOWED_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean),
+  runtimeConfig.env.RENDER_EXTERNAL_URL
+].filter((origin): origin is string => Boolean(origin)));
 
 function isAllowedOrigin(origin: string): boolean {
   return allowedOrigins.has(origin);
@@ -49,7 +52,7 @@ app.use((req, res, next) => {
   res.setHeader("Permissions-Policy", "camera=(), geolocation=(), payment=()");
   next();
 });
-app.use(cors({
+const apiCors = cors({
   origin(origin, callback) {
     if (!origin || isAllowedOrigin(origin)) {
       callback(null, true);
@@ -59,7 +62,14 @@ app.use(cors({
   },
   methods: ["GET", "POST", "PATCH", "DELETE"],
   allowedHeaders: ["Authorization", "Content-Type", "x-diagnostic-key"]
-}));
+});
+app.use((req, res, next) => {
+  if (req.path.startsWith("/admin")) {
+    next();
+    return;
+  }
+  apiCors(req, res, next);
+});
 app.use(express.json({ limit: "64kb" }));
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 app.use((req, res, next) => {

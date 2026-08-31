@@ -27,6 +27,7 @@ const envSchema = z.object({
   DB_DIAGNOSTIC_KEY: z.string().optional(),
   ADMIN_ID: z.string().min(1).optional(),
   ADMIN_PASSWORD: z.string().min(1).optional(),
+  RENDER_EXTERNAL_URL: z.string().url().optional(),
   CORS_ALLOWED_ORIGINS: z.string().default("http://localhost:8081,http://localhost:19006")
 });
 
