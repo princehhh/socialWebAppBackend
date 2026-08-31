@@ -1239,23 +1239,35 @@ app.get("/api/v1/calls/recent", requireAuth, async (req, res) => {
       OR: [{ callerId: userId }, { receiverId: userId }]
     },
     include: {
-      caller: { select: { anonymousId: true } },
-      receiver: { select: { anonymousId: true } }
+      caller: { select: { id: true, anonymousId: true, name: true, currentStatus: true, preferredLanguage: true, lastSeenAt: true } },
+      receiver: { select: { id: true, anonymousId: true, name: true, currentStatus: true, preferredLanguage: true, lastSeenAt: true } }
     },
     orderBy: { createdAt: "desc" },
     take: 50
   });
 
-  const shaped = calls.map((call) => ({
-    callId: call.id,
-    callerAnonymousId: call.caller.anonymousId,
-    receiverAnonymousId: call.receiver.anonymousId,
-    durationSeconds: call.durationSeconds,
-    createdAt: call.createdAt,
-    status: call.status,
-    callType: call.callType,
-    coinsCharged: call.coinsCharged
-  }));
+  const shaped = calls.map((call) => {
+    const otherUser = call.callerId === userId ? call.receiver : call.caller;
+    const isRecentlyActive = Date.now() - otherUser.lastSeenAt.getTime() <= ACTIVE_USER_WINDOW_MS;
+
+    return {
+      callId: call.id,
+      callerAnonymousId: call.caller.anonymousId,
+      receiverAnonymousId: call.receiver.anonymousId,
+      durationSeconds: call.durationSeconds,
+      createdAt: call.createdAt,
+      status: call.status,
+      callType: call.callType,
+      coinsCharged: call.coinsCharged,
+      otherUser: {
+        id: otherUser.id,
+        anonymousId: otherUser.anonymousId,
+        name: otherUser.name,
+        preferredLanguage: otherUser.preferredLanguage,
+        currentStatus: isRecentlyActive || hasActivePresenceSocket(otherUser.id) ? otherUser.currentStatus : "OFFLINE"
+      }
+    };
+  });
 
   return res.status(200).json(ok("Recent calls", shaped));
 });
