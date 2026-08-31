@@ -475,18 +475,31 @@ app.get("/admin", (req, res) => {
   return res.status(200).type("html").send(isAdminRequest(req) ? renderAdminPanel() : renderAdminLogin());
 });
 
+app.get("/admin/login", (_req, res) => {
+  return res.redirect("/admin");
+});
+
 app.post("/admin/login", (req, res) => {
-  if (!isAllowedAction(`admin-login:${req.ip}`, 5, 15 * 60_000) || req.body.adminId !== adminId || req.body.password !== adminPassword) {
+  const credentials = z.object({
+    adminId: z.string().min(1),
+    password: z.string().min(1)
+  }).safeParse(req.body);
+  if (!credentials.success || !isAllowedAction(`admin-login:${req.ip}`, 5, 15 * 60_000) || credentials.data.adminId !== adminId || credentials.data.password !== adminPassword) {
     return res.status(401).type("html").send(renderAdminLogin("Invalid credentials."));
   }
-  const token = jwt.sign({ role: "admin", adminId }, runtimeConfig.env.JWT_SECRET, { expiresIn: "8h" });
-  res.cookie(ADMIN_COOKIE_NAME, token, {
-    httpOnly: true,
-    sameSite: "strict",
-    secure: runtimeConfig.env.NODE_ENV === "production",
-    maxAge: 8 * 60 * 60 * 1000
-  });
-  return res.redirect("/admin");
+  try {
+    const token = jwt.sign({ role: "admin", adminId }, runtimeConfig.env.JWT_SECRET, { expiresIn: "8h" });
+    res.cookie(ADMIN_COOKIE_NAME, token, {
+      httpOnly: true,
+      sameSite: "strict",
+      secure: runtimeConfig.env.NODE_ENV === "production",
+      maxAge: 8 * 60 * 60 * 1000
+    });
+    return res.redirect("/admin");
+  } catch (error) {
+    logger.error("Admin login failed", error);
+    return res.status(500).type("html").send(renderAdminLogin("Unable to start an admin session. Check the server logs."));
+  }
 });
 
 app.get("/admin/logout", (_req, res) => {
