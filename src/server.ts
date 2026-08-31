@@ -130,6 +130,33 @@ async function updatePresence(userIds: string[], status: "ONLINE" | "OFFLINE" | 
   users.forEach(publishPresenceUpdate);
 }
 
+async function sendPresenceSnapshot(userId: string, socket: PresenceSocket): Promise<void> {
+  const blockedByMe = await prisma.block.findMany({ where: { blockerId: userId }, select: { blockedUserId: true } });
+  const blockedSet = new Set(blockedByMe.map((block) => block.blockedUserId));
+  const users = await prisma.user.findMany({
+    where: {
+      id: { not: userId },
+      isDeleted: false,
+      NOT: { id: { in: Array.from(blockedSet) } }
+    },
+    select: { id: true, anonymousId: true, name: true, currentStatus: true, preferredLanguage: true, lastSeenAt: true }
+  });
+  const nowMs = Date.now();
+  const visibleUsers = users
+    .map((user) => ({
+      id: user.id,
+      anonymousId: user.anonymousId,
+      name: user.name,
+      currentStatus: nowMs - user.lastSeenAt.getTime() <= ACTIVE_USER_WINDOW_MS || hasActivePresenceSocket(user.id) ? user.currentStatus : "OFFLINE",
+      preferredLanguage: user.preferredLanguage
+    }))
+    .filter((user) => user.currentStatus === "ONLINE");
+
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "presence-snapshot", users: visibleUsers }));
+  }
+}
+
 presenceServer.on("connection", (socket: PresenceSocket) => {
   const authenticationTimeout = setTimeout(() => socket.close(1008, "Authentication required"), 5_000);
 
@@ -156,6 +183,7 @@ presenceServer.on("connection", (socket: PresenceSocket) => {
       sockets.add(socket);
       presenceSockets.set(decoded.userId, sockets);
       await updatePresence([decoded.userId], "ONLINE");
+      await sendPresenceSnapshot(decoded.userId, socket);
     } catch {
       socket.close(1008, "Authentication failed");
     }
