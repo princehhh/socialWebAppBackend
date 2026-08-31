@@ -474,6 +474,12 @@ app.get("/api/v1", (_req, res) => {
   return res.status(200).json(ok("Service available", { status: "ok" }));
 });
 
+app.use("/admin", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  res.setHeader("Pragma", "no-cache");
+  next();
+});
+
 app.get("/admin", (req, res) => {
   return res.status(200).type("html").send(isAdminRequest(req) ? renderAdminPanel() : renderAdminLogin());
 });
