@@ -1609,8 +1609,11 @@ app.delete("/api/v1/account", requireAuth, async (req, res) => {
   return res.status(200).json(ok("Account deleted"));
 });
 
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
   logger.error("Unhandled error", err);
+  if (req.path.startsWith("/admin")) {
+    return res.status(500).type("html").send(renderAdminLogin("Unable to complete the admin request. Check the Render service logs."));
+  }
   return res.status(500).json(fail("Internal server error", "INTERNAL_ERROR"));
 });
 
